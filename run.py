@@ -1,7 +1,11 @@
 import argparse
-from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import List
+import os
+import sqlite3
+from asyncio import sleep
+from typing import List, Dict, Union
+
+from discord import Game, Message, PCMVolumeTransformer, PCMAudio
+from discord.ext import commands
 
 try:
     import each_cpp_forwarder
@@ -10,14 +14,20 @@ except:
 
 import romkan
 import soundfile
-import uvicorn
-from fastapi import FastAPI, Response
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse
 
 from voicevox_engine.full_context_label import extract_full_context_label
 from voicevox_engine.model import AccentPhrase, AudioQuery, Mora
 from voicevox_engine.synthesis_engine import SynthesisEngine
+from bot_lib.common import ConnectionItem, SpeechQueueItem
+
+
+# search_name = "/".join(str(__file__).split("/")[:-1]) + "/bot_commands/*.py"
+# COMMANDS = list(
+#     map(
+#         lambda p: "." + p.replace("\\", ".").replace("C:/", "").replace("/", ".").replace(".py", ""),
+#         glob.glob(search_name)
+#     )
+# )
 
 
 def mora_to_text(mora: str):
@@ -35,43 +45,59 @@ def mora_to_text(mora: str):
         return romkan.to_katakana(mora)
 
 
-def generate_app(use_gpu: bool):
-    root_dir = Path(__file__).parent
+class TTSBotSample(commands.Bot):
+    def __init__(self, command_prefix: str, use_gpu: bool) -> None:
+        super().__init__(command_prefix)
 
-    app = FastAPI(
-        title="VOICEVOX ENGINE",
-        description="VOICEVOXの音声合成エンジンです。",
-        version=(root_dir / "VERSION.txt").read_text(),
-    )
+        # TODO: VOICEVOX_DIR上だとこれが通用しない
+        # for cog in COMMANDS:
+        #     try:
+        #         bot.load_extension(cog)
+        #     except Exception:
+        #         traceback.print_exc()
+        each_cpp_forwarder.initialize("1", "2", "3", use_gpu)
+        self.engine = SynthesisEngine(
+            yukarin_s_forwarder=each_cpp_forwarder.yukarin_s_forward,
+            yukarin_sa_forwarder=each_cpp_forwarder.yukarin_sa_forward,
+            decode_forwarder=each_cpp_forwarder.decode_forward,
+        )
+        self.connections: Dict[int, ConnectionItem] = {}
+        self.con = sqlite3.connect("tts_bot.sqlite")
+        self.cur = self.con.cursor()
+        self.create_db()
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    def __del__(self):
+        self.con.close()
 
-    each_cpp_forwarder.initialize("1", "2", "3", use_gpu)
-    engine = SynthesisEngine(
-        yukarin_s_forwarder=each_cpp_forwarder.yukarin_s_forward,
-        yukarin_sa_forwarder=each_cpp_forwarder.yukarin_sa_forward,
-        decode_forwarder=each_cpp_forwarder.decode_forward,
-    )
+    async def on_ready(self):
+        print(
+            "Successful login.\n" +
+            "Name: " + str(self.user.name) + "\n" +
+            "ID: " + str(self.user.id)
+        )
+        await self.change_presence(activity=Game(name="?help"))
+
+    async def on_message(self, message: Message) -> None:
+        await self.process_commands(message)
+        if message.content.startswith(self.command_prefix):
+            return
+        if message.author.bot or not message.guild:
+            return
+        connection = self.connections.get(message.guild.id)
+        if connection is not None and connection.channel_id == message.channel.id:
+            await self.text_to_speech(connection, message.content, message.author.name)
 
     def replace_mora_pitch(
-        accent_phrases: List[AccentPhrase], speaker_id: int
+        self, accent_phrases: List[AccentPhrase], speaker_id: int
     ) -> List[AccentPhrase]:
-        return engine.extract_phoneme_f0(
-            accent_phrases=accent_phrases, speaker_id=speaker_id
-        )
+        return self.engine.extract_phoneme_f0(accent_phrases, speaker_id)
 
-    def create_accent_phrases(text: str, speaker_id: int) -> List[AccentPhrase]:
+    def create_accent_phrases(self, text: str, speaker_id: int) -> List[AccentPhrase]:
         if len(text.strip()) == 0:
             return []
 
         utterance = extract_full_context_label(text)
-        return replace_mora_pitch(
+        return self.replace_mora_pitch(
             accent_phrases=[
                 AccentPhrase(
                     moras=[
@@ -93,8 +119,8 @@ def generate_app(use_gpu: bool):
                     pause_mora=(
                         Mora(text="、", consonant=None, vowel="pau", pitch=0)
                         if (
-                            i_accent_phrase == len(breath_group.accent_phrases) - 1
-                            and i_breath_group != len(utterance.breath_groups) - 1
+                                i_accent_phrase == len(breath_group.accent_phrases) - 1
+                                and i_breath_group != len(utterance.breath_groups) - 1
                         )
                         else None
                     ),
@@ -107,81 +133,134 @@ def generate_app(use_gpu: bool):
             speaker_id=speaker_id,
         )
 
-    @app.post(
-        "/audio_query",
-        response_model=AudioQuery,
-        tags=["クエリ作成"],
-        summary="音声合成用のクエリを作成する",
-    )
-    def audio_query(text: str, speaker: int):
-        """
-        クエリの初期値を得ます。ここで得られたクエリはそのまま音声合成に利用できます。各値の意味は`Schemas`を参照してください。
-        """
-        return AudioQuery(
-            accent_phrases=create_accent_phrases(text, speaker_id=speaker),
+    async def synthesis(self, connection: ConnectionItem) -> None:
+        speech_item = connection.speech_queue[0]
+        text = ""
+        if connection.name_speech:
+            text = speech_item.username + "。"
+        text += speech_item.content
+        # 改行は句点として扱う
+        text.replace("\n", "。")
+        speaker_id = connection.speaker_id
+        query = AudioQuery(
+            accent_phrases=self.create_accent_phrases(text, speaker_id),
             speedScale=1,
             pitchScale=0,
             intonationScale=1,
             volumeScale=1,
         )
 
-    @app.post(
-        "/accent_phrases",
-        response_model=List[AccentPhrase],
-        tags=["クエリ編集"],
-        summary="テキストからアクセント句を得る",
-    )
-    def accent_phrases(text: str, speaker: int):
-        return create_accent_phrases(text, speaker_id=speaker)
+        wave = self.engine.synthesis(query, speaker_id)
 
-    @app.post(
-        "/mora_pitch",
-        response_model=List[AccentPhrase],
-        tags=["クエリ編集"],
-        summary="アクセント句から音高を得る",
-    )
-    def mora_pitch(accent_phrases: List[AccentPhrase], speaker: int):
-        return replace_mora_pitch(accent_phrases, speaker_id=speaker)
+        bytes_io = BytesIO()
+        soundfile.write(file=bytes_io, data=wave, samplerate=24000, format="WAV")
+        connection.voice_client.play(PCMVolumeTransformer(PCMAudio(bytes_io), volume=connection.volume / 100))
 
-    @app.post(
-        "/synthesis",
-        response_class=FileResponse,
-        responses={
-            200: {
-                "content": {
-                    "audio/wav": {"schema": {"type": "string", "format": "binary"}}
-                },
-            }
-        },
-        tags=["音声合成"],
-        summary="音声合成する",
-    )
-    def synthesis(query: AudioQuery, speaker: int):
-        # StreamResponseだとnuiktaビルド後の実行でエラーが発生するのでFileResponse
-        wave = engine.synthesis(query=query, speaker_id=speaker)
-        sr = 24000
+        while connection.voice_client.is_playing():
+            await sleep(1)
+        connection.speech_queue.pop(0)
 
-        with NamedTemporaryFile(delete=False) as f:
-            soundfile.write(file=f, data=wave, samplerate=sr, format="WAV")
+        if speech_item.tts_end:
+            guild_id: int = connection.voice_client.guild.id
+            await connection.voice_client.disconnect()
+            del self.connections[guild_id]
+        elif len(connection.speech_queue) > 0:
+            await self.synthesis(connection)
 
-        return FileResponse(f.name, media_type="audio/wav")
+    async def text_to_speech(
+            self,
+            connection: ConnectionItem,
+            content: str,
+            username: str = "",
+            tts_end: bool = False
+    ) -> None:
+        connection.speech_queue.append(SpeechQueueItem(content, username, tts_end))
+        if not connection.voice_client.is_playing() or len(connection.speech_queue) == 1:
+            await self.synthesis(connection)
 
-    @app.get("/version", tags=["その他"])
-    def version() -> str:
-        return (root_dir / "VERSION.txt").read_text()
+    def create_db(self) -> None:
+        create_tts_bot_table = """
+            create table if not exists tts_bot(
+                guild_id integer primary key,
+                volume integer default 50,
+                name_speech interger default 1
+            )
+        """
+        self.cur.execute(create_tts_bot_table)
+        self.con.commit()
 
-    @app.get("/speakers", tags=["その他"])
-    def speakers():
-        # TODO 音声ライブラリのAPIが出来たら差し替える
-        return Response(content=(root_dir / "speakers.json").read_text("utf-8"), media_type="application/json")
+    def get_volume(self, guild_id: int) -> Union[int, None]:
+        sql = "select volume from tts_bot where guild_id = ?"
+        self.cur.execute(sql, (guild_id,))
+        result = self.cur.fetchone()
+        if result is None:
+            return None
+        print(result)
+        return result[0]
 
-    return app
+    def set_volume(self, guild_id: int, volume: int) -> None:
+        # このUpsert構文はSQLite 3.24.1以降でなければ使えない。
+        # Windowsに入るPython 3.7の標準SQLite Versionは3.21.0のため、使えない。
+        # sql = """
+        #     insert into tts_bot(guild_id, volume)
+        #     values (?, ?)
+        #     on conflict(guild_id)
+        #     do update
+        #     set volume=excluded.volume
+        # """
+        if self.get_volume(guild_id) is None:
+            sql = """
+                insert into tts_bot(volume, guild_id)
+                values (?, ?)
+            """
+        else:
+            sql = """
+                update tts_bot set volume = ?
+                where guild_id = ?
+            """
+        self.cur.execute(sql, (volume, guild_id))
+        self.con.commit()
+        connection = self.connections.get(guild_id)
+        if connection:
+            connection.volume = volume
 
 
-if __name__ == "__main__":
+    def get_name_speech(self, guild_id: int) -> Union[bool, None]:
+        sql = "select name_speech from tts_bot where guild_id = ?"
+        self.cur.execute(sql, (guild_id,))
+        result = self.cur.fetchone()
+        if result is None:
+            return None
+        return bool(result[0])
+
+    def set_name_speech(self, guild_id: int, name_speech: bool) -> None:
+        # sql = """
+        #     insert into tts_bot(guild_id, name_speech)
+        #     values (?, ?)
+        #     on conflict(guild_id)
+        #     do update
+        #     set name_speech=excluded.name_speech
+        # """
+        if self.get_name_speech(guild_id) is None:
+            sql = """
+                insert into tts_bot(name_speech, guild_id)
+                values (?, ?)
+            """
+        else:
+            sql = """
+                update tts_bot set name_speech = ?
+                where guild_id = ?
+            """
+        self.cur.execute(sql, (int(name_speech), guild_id))
+        self.con.commit()
+        connection = self.connections.get(guild_id)
+        if connection:
+            connection.name_speech = name_speech
+
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=50021)
     parser.add_argument("--use_gpu", action="store_true")
     args = parser.parse_args()
-    uvicorn.run(generate_app(use_gpu=args.use_gpu), host=args.host, port=args.port)
+    bot = TTSBotSample(command_prefix='?', use_gpu=args.use_gpu)
+    bot.run(os.environ["TOKEN"])

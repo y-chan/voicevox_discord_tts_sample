@@ -20,6 +20,12 @@ from voicevox_engine.model import AccentPhrase, AudioQuery, Mora
 from voicevox_engine.synthesis_engine import SynthesisEngine
 from bot_lib.common import ConnectionItem, SpeechQueueItem
 
+from bot_commands.metan import Metan
+from bot_commands.zundamon import Zundamon
+from bot_commands.name import Name
+from bot_commands.volume import Volume
+from bot_commands.end import End
+from bot_commands.help import Help
 
 # search_name = "/".join(str(__file__).split("/")[:-1]) + "/bot_commands/*.py"
 # COMMANDS = list(
@@ -55,6 +61,8 @@ class TTSBotSample(commands.Bot):
         #         bot.load_extension(cog)
         #     except Exception:
         #         traceback.print_exc()
+        for cog in [Metan, Zundamon, Name, Volume, End, Help]:
+            self.add_cog(cog(self))
         each_cpp_forwarder.initialize("1", "2", "3", use_gpu)
         self.engine = SynthesisEngine(
             yukarin_s_forwarder=each_cpp_forwarder.yukarin_s_forward,

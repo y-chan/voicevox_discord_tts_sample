@@ -2,9 +2,10 @@ import argparse
 import os
 import sqlite3
 from asyncio import sleep
+from tempfile import NamedTemporaryFile
 from typing import List, Dict, Union
 
-from discord import Game, Message, PCMVolumeTransformer, PCMAudio
+from discord import Game, Message, PCMVolumeTransformer, FFmpegPCMAudio
 from discord.ext import commands
 
 try:
@@ -161,9 +162,13 @@ class TTSBotSample(commands.Bot):
 
         wave = self.engine.synthesis(query, speaker_id)
 
-        bytes_io = BytesIO()
-        soundfile.write(file=bytes_io, data=wave, samplerate=24000, format="WAV")
-        connection.voice_client.play(PCMVolumeTransformer(PCMAudio(bytes_io), volume=connection.volume / 100))
+        # TODO: 一度ファイルに書き出してFFmpegを使う現状の再生方法は応答が遅いが、これ以外では声が正しく再生出来ない。これを改善したい。
+        with NamedTemporaryFile(delete=False) as f:
+            soundfile.write(file=f, data=wave, samplerate=24000, format="WAV")
+        connection.voice_client.play(PCMVolumeTransformer(FFmpegPCMAudio(f.name), volume=connection.volume / 100))
+        # bytes_io = BytesIO()
+        # soundfile.write(file=bytes_io, data=wave, samplerate=24000, format="WAV")
+        # connection.voice_client.play(PCMVolumeTransformer(PCMAudio(bytes_io), volume=connection.volume / 100))
 
         while connection.voice_client.is_playing():
             await sleep(1)

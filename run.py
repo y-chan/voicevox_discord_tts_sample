@@ -61,6 +61,7 @@ class TTSBotSample(commands.Bot):
         #         bot.load_extension(cog)
         #     except Exception:
         #         traceback.print_exc()
+        self.remove_command("help")
         for cog in [Metan, Zundamon, Name, Volume, End, Help]:
             self.add_cog(cog(self))
         each_cpp_forwarder.initialize("1", "2", "3", use_gpu)

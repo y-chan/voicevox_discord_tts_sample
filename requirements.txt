@@ -4,5 +4,6 @@ python-multipart
 uvicorn
 aiofiles
 soundfile
+discord.py[voice]
 git+https://github.com/Hiroshiba/pyopenjtalk@69e5f354634f98098113f9cac5a6ea736443f9c9
 git+https://github.com/Hiroshiba/python-romkan

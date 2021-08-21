@@ -21,10 +21,6 @@ Git等に上げず、完全にローカル運用するのであれば、`run.py`
 ```
 直接埋め込みたくない方は、`TOKEN`環境変数に設定しておく等、お好きな方法で設定してください。
 
-### FFmpegのインストール
-[こちら](https://www.gyan.dev/ffmpeg/builds/)から`ffmpeg-release-essentials.zip`を探してダウンロードし、
-PATHを通しておいてください(PATHの通し方についてはここでは省略します)。
-
 ## 実行
 
 ### 注意

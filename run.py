@@ -5,6 +5,7 @@ from asyncio import sleep
 from io import BytesIO
 from typing import List, Dict, Union
 
+import numpy as np
 import resampy as resampy
 from discord import Game, Message, PCMVolumeTransformer, PCMAudio
 from discord.ext import commands
@@ -163,10 +164,10 @@ class TTSBotSample(commands.Bot):
 
         wave = self.engine.synthesis(query, speaker_id)
 
-        # TODO: 48kHzでなければ正しく再生されないはずだが、なぜか96kHzにリサンプリングしなければ正しく再生されない。モノラルだから?
-        wave = resampy.resample(wave, 24000, 96000, filter='sinc_window')
+        # モノラルからステレオに変換後、リサンプリング
+        wave = resampy.resample(np.array([wave, wave]).T, 24000, 48000, filter='kaiser_fast')
         bytes_io = BytesIO()
-        soundfile.write(file=bytes_io, data=wave, samplerate=96000, format="WAV")
+        soundfile.write(file=bytes_io, data=wave, samplerate=48000, format="WAV")
         bytes_io.seek(0)
         connection.voice_client.play(PCMVolumeTransformer(PCMAudio(bytes_io), volume=connection.volume / 100))
 

@@ -6,12 +6,12 @@ if TYPE_CHECKING:
     from run import TTSBotSample
 
 
-class End(commands.Cog):
+class Stop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot  # type: TTSBotSample
 
     @commands.command()
-    async def end(self, ctx: Context):
+    async def stop(self, ctx: Context):
         if ctx.guild is None:
             await ctx.channel.send("サーバー内専用コマンドです。")
             return

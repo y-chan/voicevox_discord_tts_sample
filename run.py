@@ -27,7 +27,7 @@ from bot_commands.metan import Metan
 from bot_commands.zundamon import Zundamon
 from bot_commands.name import Name
 from bot_commands.volume import Volume
-from bot_commands.end import End
+from bot_commands.stop import Stop
 from bot_commands.help import Help
 
 # search_name = "/".join(str(__file__).split("/")[:-1]) + "/bot_commands/*.py"
@@ -65,7 +65,7 @@ class TTSBotSample(commands.Bot):
         #     except Exception:
         #         traceback.print_exc()
         self.remove_command("help")
-        for cog in [Metan, Zundamon, Name, Volume, End, Help]:
+        for cog in [Metan, Zundamon, Name, Volume, Stop, Help]:
             self.add_cog(cog(self))
         each_cpp_forwarder.initialize("1", "2", "3", use_gpu)
         self.engine = SynthesisEngine(

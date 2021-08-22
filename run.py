@@ -189,6 +189,8 @@ class TTSBotSample(commands.Bot):
             username: str = "",
             tts_end: bool = False
     ) -> None:
+        if len(content) > 50:
+            content = content[:50] + "以下略"
         connection.speech_queue.append(SpeechQueueItem(content, username, tts_end))
         if not connection.voice_client.is_playing() or len(connection.speech_queue) == 1:
             await self.synthesis(connection)

@@ -33,3 +33,6 @@ class Name(commands.Cog):
             await ctx.channel.send(f"現在の名前読み上げ設定は{'on' if name_speech else 'off'}です。")
         else:
             await ctx.channel.send("コマンドが不正です。")
+
+def setup(bot):
+    bot.add_cog(Name(bot))

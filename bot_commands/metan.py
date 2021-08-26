@@ -11,3 +11,7 @@ class Metan(TTSStartCommon):
     @commands.command()
     async def metan(self, ctx: Context):
         await self.tts_setup(ctx, 0)
+
+
+def setup(bot):
+    bot.add_cog(Metan(bot))

@@ -34,3 +34,16 @@ class AudioQuery(BaseModel):
     pitchScale: float = Field(title="全体の音高")
     intonationScale: float = Field(title="全体の抑揚")
     volumeScale: float = Field(title="全体の音量")
+    prePhonemeLength: float = Field(title="音声の前の無音時間")
+    postPhonemeLength: float = Field(title="音声の後の無音時間")
+    outputSamplingRate: int = Field(title="音声データの出力サンプリングレート")
+    outputStereo: bool = Field(title="音声データをステレオ出力するか否か")
+
+
+class Speaker(BaseModel):
+    """
+    スピーカー情報
+    """
+
+    name: str = Field(title="名前")
+    speaker_id: int = Field(title="スピーカーID")

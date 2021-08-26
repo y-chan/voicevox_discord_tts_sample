@@ -1,19 +1,20 @@
 import argparse
+import glob
 import os
 import sqlite3
+import traceback
 from asyncio import sleep
 from io import BytesIO
-from typing import List, Dict, Union
+from typing import Dict, Union
 
 import numpy as np
 import resampy as resampy
 from discord import Game, Message, PCMVolumeTransformer, PCMAudio
 from discord.ext import commands
 
-try:
-    import each_cpp_forwarder
-except:
-    from voicevox_engine.dev import each_cpp_forwarder
+import sys
+from pathlib import Path
+from typing import List, Optional
 
 import romkan
 import soundfile
@@ -23,20 +24,69 @@ from voicevox_engine.model import AccentPhrase, AudioQuery, Mora
 from voicevox_engine.synthesis_engine import SynthesisEngine
 from bot_lib.common import ConnectionItem, SpeechQueueItem
 
-from bot_commands.metan import Metan
-from bot_commands.zundamon import Zundamon
-from bot_commands.name import Name
-from bot_commands.volume import Volume
-from bot_commands.stop import Stop
-from bot_commands.help import Help
 
-# search_name = "/".join(str(__file__).split("/")[:-1]) + "/bot_commands/*.py"
-# COMMANDS = list(
-#     map(
-#         lambda p: "." + p.replace("\\", ".").replace("C:/", "").replace("/", ".").replace(".py", ""),
-#         glob.glob(search_name)
-#     )
-# )
+search_name = "bot_commands/*.py"
+COMMANDS = list(
+    map(
+        lambda p: p.replace("\\", ".").replace(".py", ""),
+        glob.glob(search_name)
+    )
+)
+
+
+def make_synthesis_engine(
+    use_gpu: bool,
+    voicevox_dir: Optional[Path] = None,
+    voicelib_dir: Optional[Path] = None,
+) -> SynthesisEngine:
+    """
+    音声ライブラリをロードして、音声合成エンジンを生成
+
+    Parameters
+    ----------
+    use_gpu: bool
+        音声ライブラリに GPU を使わせるか否か
+    voicevox_dir: Path, optional, default=None
+        音声ライブラリの Python モジュールがあるディレクトリ
+        None のとき、Python 標準のモジュール検索パスのどれかにあるとする
+    voicelib_dir: Path, optional, default=None
+        音声ライブラリ自体があるディレクトリ
+        None のとき、音声ライブラリの Python モジュールと同じディレクトリにあるとする
+    """
+
+    # Python モジュール検索パスへ追加
+    if voicevox_dir is not None:
+        print("Notice: --voicevox_dir is " + voicevox_dir.as_posix(), file=sys.stderr)
+        if voicevox_dir.exists():
+            sys.path.insert(0, str(voicevox_dir))
+
+    try:
+        import each_cpp_forwarder
+    except ImportError:
+        from voicevox_engine.dev import each_cpp_forwarder
+
+        # 音声ライブラリの Python モジュールをロードできなかった
+        print(
+            "Notice: mock-library will be used. Try re-run with valid --voicevox_dir",  # noqa
+            file=sys.stderr,
+        )
+
+    if voicelib_dir is None:
+        voicelib_dir = Path(each_cpp_forwarder.__file__).parent
+
+    each_cpp_forwarder.initialize(
+        voicelib_dir.as_posix() + "/",
+        "1",
+        "2",
+        "3",
+        use_gpu,
+    )
+
+    return SynthesisEngine(
+        yukarin_s_forwarder=each_cpp_forwarder.yukarin_s_forward,
+        yukarin_sa_forwarder=each_cpp_forwarder.yukarin_sa_forward,
+        decode_forwarder=each_cpp_forwarder.decode_forward,
+    )
 
 
 def mora_to_text(mora: str):
@@ -55,24 +105,15 @@ def mora_to_text(mora: str):
 
 
 class TTSBotSample(commands.Bot):
-    def __init__(self, command_prefix: str, use_gpu: bool) -> None:
+    def __init__(self, command_prefix: str, synthesis_engine: SynthesisEngine) -> None:
         super().__init__(command_prefix)
 
-        # TODO: VOICEVOX_DIR上だとこれが通用しない
-        # for cog in COMMANDS:
-        #     try:
-        #         bot.load_extension(cog)
-        #     except Exception:
-        #         traceback.print_exc()
-        self.remove_command("help")
-        for cog in [Metan, Zundamon, Name, Volume, Stop, Help]:
-            self.add_cog(cog(self))
-        each_cpp_forwarder.initialize("1", "2", "3", use_gpu)
-        self.engine = SynthesisEngine(
-            yukarin_s_forwarder=each_cpp_forwarder.yukarin_s_forward,
-            yukarin_sa_forwarder=each_cpp_forwarder.yukarin_sa_forward,
-            decode_forwarder=each_cpp_forwarder.decode_forward,
-        )
+        for cog in COMMANDS:
+            try:
+                self.load_extension(cog)
+            except Exception:
+                traceback.print_exc()
+        self.engine = synthesis_engine
         self.connections: Dict[int, ConnectionItem] = {}
         self.con = sqlite3.connect("tts_bot.sqlite")
         self.cur = self.con.cursor()
@@ -154,25 +195,32 @@ class TTSBotSample(commands.Bot):
         # 改行は句点として扱う
         text.replace("\n", "。")
         speaker_id = connection.speaker_id
-        query = AudioQuery(
-            accent_phrases=self.create_accent_phrases(text, speaker_id),
-            speedScale=1,
-            pitchScale=0,
-            intonationScale=1,
-            volumeScale=1,
-        )
+        try:
+            query = AudioQuery(
+                accent_phrases=self.create_accent_phrases(text, speaker_id),
+                speedScale=1,
+                pitchScale=0,
+                intonationScale=1,
+                volumeScale=1,
+                prePhonemeLength=0.1,
+                postPhonemeLength=0.1,
+                outputSamplingRate=48000,
+                outputStereo=True,
+            )
 
-        wave = self.engine.synthesis(query, speaker_id)
+            wave = self.engine.synthesis(query, speaker_id)
 
-        # モノラルからステレオに変換後、リサンプリング
-        wave = resampy.resample(np.array([wave, wave]).T, 24000, 48000, filter='kaiser_fast')
-        bytes_io = BytesIO()
-        soundfile.write(file=bytes_io, data=wave, samplerate=48000, format="WAV")
-        bytes_io.seek(0)
-        connection.voice_client.play(PCMVolumeTransformer(PCMAudio(bytes_io), volume=connection.volume / 100))
+            # モノラルからステレオに変換後、リサンプリング
+            wave = resampy.resample(np.array([wave, wave]).T, 24000, query.outputSamplingRate, filter='kaiser_fast')
+            bytes_io = BytesIO()
+            soundfile.write(file=bytes_io, data=wave, samplerate=query.outputSamplingRate, format="WAV")
+            bytes_io.seek(0)
+            connection.voice_client.play(PCMVolumeTransformer(PCMAudio(bytes_io), volume=connection.volume / 100))
 
-        while connection.voice_client.is_playing():
-            await sleep(1)
+            while connection.voice_client.is_playing():
+                await sleep(1)
+        except Exception:
+            pass
         connection.speech_queue.pop(0)
 
         if speech_item.tts_end:
@@ -274,9 +322,18 @@ class TTSBotSample(commands.Bot):
             connection.name_speech = name_speech
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use_gpu", action="store_true")
+    parser.add_argument("--voicevox_dir", type=Path, default=None)
+    parser.add_argument("--voicelib_dir", type=Path, default=None)
     args = parser.parse_args()
-    bot = TTSBotSample(command_prefix='?', use_gpu=args.use_gpu)
+    bot = TTSBotSample(
+        command_prefix='?',
+        synthesis_engine=make_synthesis_engine(
+            use_gpu=args.use_gpu,
+            voicevox_dir=args.voicevox_dir,
+            voicelib_dir=args.voicelib_dir,
+        )
+    )
     bot.run(os.environ["TOKEN"])

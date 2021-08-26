@@ -20,3 +20,6 @@ class Stop(commands.Cog):
             await ctx.channel.send(f"{self.bot.user.name}は現在TTS機能が起動していません。")
             return
         await self.bot.text_to_speech(connection, "TTS機能を終了します。", tts_end=True)
+
+def setup(bot):
+    bot.add_cog(Stop(bot))

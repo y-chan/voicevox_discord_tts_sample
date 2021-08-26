@@ -36,3 +36,7 @@ class Volume(commands.Cog):
             await ctx.channel.send(f"現在の音量は{volume}です。")
         else:
             await ctx.channel.send("コマンドが不正です。")
+
+
+def setup(bot):
+    bot.add_cog(Volume(bot))

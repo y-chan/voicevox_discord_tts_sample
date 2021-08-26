@@ -7,7 +7,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-/venv
-/.idea
+# test artifacts
+.mypy_cache/
+
+# virtual environment
+venv/
+# JetBrains IDE project settings folder
+.idea/
 
 *.sqlite

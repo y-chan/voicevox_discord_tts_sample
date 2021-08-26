@@ -62,3 +62,8 @@ class Help(commands.Cog):
                          icon_url=self.bot.user.avatar_url_as(format='png', size=256))
 
         await ctx.channel.send(embed=embed)
+
+
+def setup(bot):
+    bot.remove_command('help')
+    bot.add_cog(Help(bot))

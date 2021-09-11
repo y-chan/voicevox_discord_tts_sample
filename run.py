@@ -16,11 +16,21 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-import romkan
+import numpy as np
+import resampy
 import soundfile
 
 from voicevox_engine.full_context_label import extract_full_context_label
-from voicevox_engine.model import AccentPhrase, AudioQuery, Mora
+from voicevox_engine.kana_parser import create_kana, parse_kana
+from voicevox_engine.model import (
+    AccentPhrase,
+    AudioQuery,
+    Mora,
+    ParseKanaBadRequest,
+    ParseKanaError,
+    Speaker,
+)
+from voicevox_engine.mora_list import openjtalk_mora2text
 from voicevox_engine.synthesis_engine import SynthesisEngine
 from bot_lib.common import ConnectionItem, SpeechQueueItem
 
@@ -60,10 +70,13 @@ def make_synthesis_engine(
         if voicevox_dir.exists():
             sys.path.insert(0, str(voicevox_dir))
 
+    has_voicevox_core = True
     try:
-        import each_cpp_forwarder
+        import core
     except ImportError:
-        from voicevox_engine.dev import each_cpp_forwarder
+        from voicevox_engine.dev import core
+
+        has_voicevox_core = False
 
         # 音声ライブラリの Python モジュールをロードできなかった
         print(
@@ -72,36 +85,33 @@ def make_synthesis_engine(
         )
 
     if voicelib_dir is None:
-        voicelib_dir = Path(each_cpp_forwarder.__file__).parent
+        voicelib_dir = Path(__file__).parent  # core.__file__だとnuitkaビルド後にエラー
 
-    each_cpp_forwarder.initialize(
-        voicelib_dir.as_posix() + "/",
-        "1",
-        "2",
-        "3",
-        use_gpu,
+    core.initialize(voicelib_dir.as_posix() + "/", use_gpu)
+
+    if has_voicevox_core:
+        return SynthesisEngine(
+            yukarin_s_forwarder=core.yukarin_s_forward,
+            yukarin_sa_forwarder=core.yukarin_sa_forward,
+            decode_forwarder=core.decode_forward,
+        )
+
+    from voicevox_engine.dev.synthesis_engine import (
+        SynthesisEngine as mock_synthesis_engine,
     )
 
-    return SynthesisEngine(
-        yukarin_s_forwarder=each_cpp_forwarder.yukarin_s_forward,
-        yukarin_sa_forwarder=each_cpp_forwarder.yukarin_sa_forward,
-        decode_forwarder=each_cpp_forwarder.decode_forward,
-    )
+    # モックで置き換える
+    return mock_synthesis_engine()
 
 
 def mora_to_text(mora: str):
-    if mora == "cl":
-        return "ッ"
-    elif mora == "ti":
-        return "ティ"
-    elif mora == "tu":
-        return "トゥ"
-    elif mora == "di":
-        return "ディ"
-    elif mora == "du":
-        return "ドゥ"
+    if mora[-1:] in ["A", "I", "U", "E", "O"]:
+        # 無声化母音を小文字に
+        mora = mora[:-1] + mora[-1].lower()
+    if mora in openjtalk_mora2text:
+        return openjtalk_mora2text[mora]
     else:
-        return romkan.to_katakana(mora)
+        return mora
 
 
 class TTSBotSample(commands.Bot):
@@ -143,8 +153,12 @@ class TTSBotSample(commands.Bot):
     def replace_mora_data(
         self, accent_phrases: List[AccentPhrase], speaker_id: int
     ) -> List[AccentPhrase]:
-        return self.engine.replace_phoneme_data(
-            accent_phrases=accent_phrases, speaker_id=speaker_id
+        return self.engine.replace_mora_pitch(
+            accent_phrases=self.engine.replace_phoneme_length(
+                accent_phrases=accent_phrases,
+                speaker_id=speaker_id,
+            ),
+            speaker_id=speaker_id,
         )
 
     def create_accent_phrases(self, text: str, speaker_id: int) -> List[AccentPhrase]:
@@ -152,6 +166,9 @@ class TTSBotSample(commands.Bot):
             return []
 
         utterance = extract_full_context_label(text)
+        if len(utterance.breath_groups) == 0:
+            return []
+
         return self.replace_mora_data(
             accent_phrases=[
                 AccentPhrase(
@@ -206,9 +223,23 @@ class TTSBotSample(commands.Bot):
         # 改行は句点として扱う
         text.replace("\n", "。")
         speaker_id = connection.speaker_id
+        # TODO: AqKanji2Koeを呼び出す機構の追加
+        # if is_kana:
+        #     try:
+        #         accent_phrases = parse_kana(text)
+        #     except ParseKanaError as err:
+        #         raise HTTPException(
+        #             status_code=400,
+        #             detail=ParseKanaBadRequest(err).dict(),
+        #         )
+        #     accent_phrases = self.replace_mora_data(accent_phrases=accent_phrases, speaker_id=speaker_id)
+        # else:
+        #     accent_phrases = self.create_accent_phrases(text, speaker_id=speaker_id)
+        accent_phrases = self.create_accent_phrases(text, speaker_id=speaker_id)
+
         try:
             query = AudioQuery(
-                accent_phrases=self.create_accent_phrases(text, speaker_id),
+                accent_phrases=accent_phrases,
                 speedScale=1,
                 pitchScale=0,
                 intonationScale=1,
@@ -217,6 +248,7 @@ class TTSBotSample(commands.Bot):
                 postPhonemeLength=0.1,
                 outputSamplingRate=48000,
                 outputStereo=True,
+                kana=create_kana(accent_phrases),
             )
 
             wave = self.engine.synthesis(query, speaker_id)

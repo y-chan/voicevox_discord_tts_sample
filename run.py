@@ -127,6 +127,7 @@ class TTSBotSample(commands.Bot):
         self.connections: Dict[int, ConnectionItem] = {}
         self.con = sqlite3.connect("tts_bot.sqlite")
         self.cur = self.con.cursor()
+        self.read_lock = False
         self.create_db()
 
     def __del__(self):
@@ -238,6 +239,7 @@ class TTSBotSample(commands.Bot):
         accent_phrases = self.create_accent_phrases(text, speaker_id=speaker_id)
 
         try:
+            self.read_lock = True
             query = AudioQuery(
                 accent_phrases=accent_phrases,
                 speedScale=1,
@@ -264,7 +266,9 @@ class TTSBotSample(commands.Bot):
                 await sleep(1)
         except Exception:
             pass
-        connection.speech_queue.pop(0)
+        finally:
+            connection.speech_queue.pop(0)
+            self.read_lock = False
 
         if speech_item.tts_end:
             guild_id: int = connection.voice_client.guild.id
@@ -283,7 +287,7 @@ class TTSBotSample(commands.Bot):
         if len(content) > 50:
             content = content[:50] + "以下略"
         connection.speech_queue.append(SpeechQueueItem(content, username, tts_end))
-        if not connection.voice_client.is_playing() or len(connection.speech_queue) == 1:
+        if not self.read_lock or len(connection.speech_queue) == 1:
             await self.synthesis(connection)
 
     def create_db(self) -> None:

@@ -1,5 +1,7 @@
 # VOICEVOX ENGINE + Discord TTS Sample Bot
 
+## DEPRECATED: 本実装はメンテナンスされていません。 Discord.jsを用いた[Node.js実装](https://github.com/y-chan/voicevox_discord_tts_bot)に移行しました。
+
 discord.pyを使ったDiscord Bot上に[VOICEVOX ENGINE](https://github.com/Hiroshiba/voicevox_engine)を用いたTTS機能を載せるサンプル。
 Bot自体を製作者がホストして公開するのはライセンス的に微妙な気がするので、動作するコードを公開します。  
 利用したい人がセルフホストして利用してください。  
